@@ -1,6 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const cron = require("node-cron");
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
@@ -88,31 +90,21 @@ app.post("/tasks", async (req, res) => {
 
 app.patch("/tasks/:id", async (req, res) => {
   try {
-    const { category, order } = req.body;
+    const { title, description, category, type } = req.body;
     const id = req.params.id;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ error: "Invalid task ID" });
     }
 
-    // Find the task before updating
     const task = await taskCollection.findOne({ _id: new ObjectId(id) });
     if (!task) {
       return res.status(404).json({ error: "Task not found" });
     }
 
-    // If moving within the same category, adjust the order of other tasks
-    if (task.category === category) {
-      await taskCollection.updateMany(
-        { category, order: { $gte: order } },
-        { $inc: { order: 1 } }
-      );
-    }
-
-    // Update the task
     const result = await taskCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { category, order } }
+      { $set: { title, description, category, type } }
     );
 
     if (result.modifiedCount === 0) {
@@ -145,6 +137,41 @@ app.delete("/tasks/:id", async (req, res) => {
   } catch (error) {
     console.error("Error deleting task:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.patch("/tasks/update-status", async (req, res) => {
+  try {
+    const currentDate = new Date();
+    const result = await taskCollection.updateMany(
+      { deadline: { $lt: currentDate }, type: "active" },
+      { $set: { type: "timeout" } }
+    );
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update tasks" });
+  }
+});
+
+cron.schedule("* * * * *", async () => {
+  try {
+    const now = new Date();
+    const expiredTasks = await taskCollection
+      .find({
+        deadline: { $lt: now },
+        type: "active",
+      })
+      .toArray();
+
+    if (expiredTasks.length > 0) {
+      await taskCollection.updateMany(
+        { _id: { $in: expiredTasks.map((task) => task._id) } },
+        { $set: { type: "timeout" } }
+      );
+      console.log(`${expiredTasks.length} tasks moved to timeout.`);
+    }
+  } catch (error) {
+    console.error("Error updating expired tasks:", error);
   }
 });
 
